@@ -1,0 +1,125 @@
+name: Build macOS App
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      update_version:
+        description: '是否更新版本号'
+        type: boolean
+        required: true
+        default: false
+      version:
+        description: '新版本号 (例如: 0.4.7)'
+        required: false
+        type: string
+      target_release:
+        description: '目标 Release (不填则使用最新)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Install uv
+      run: |
+        python -m pip install uv
+    
+    - name: Update Version
+      if: github.event.inputs.update_version == 'true' && github.event.inputs.version != ''
+      run: |
+        version="${{ github.event.inputs.version }}"
+        sed -i '' "s/version = \".*\"/version = \"$version\"/" pyproject.toml
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'actions@github.com'
+        git add pyproject.toml
+        git commit -m "build: update version to $version"
+        git push
+        
+    - name: Install dependencies
+      run: |
+        uv venv
+        uv pip install -e .
+        uv pip install pyinstaller
+      
+    - name: Build with PyInstaller
+      run: |
+        source .venv/bin/activate
+        # 获取 pyfiglet 路径
+        PYFIGLET_PATH=$(python -c "import pyfiglet; import os; print(os.path.dirname(pyfiglet.__file__))")
+        
+        pyinstaller --noconfirm \
+          --clean \
+          --onefile \
+          --add-data "think_mcp_host:think_mcp_host" \
+          --add-data "think_mcp_host/resources:think_mcp_host/resources" \
+          --add-data "$PYFIGLET_PATH/fonts:pyfiglet/fonts" \
+          --name "AI-Zen-Love-bin" \
+          --target-arch arm64 \
+          --codesign-identity="-" \
+          --osx-bundle-identifier "com.thinkthinking.aizenapp" \
+          --icon "think_mcp_host/resources/icons/heart.icns" \
+          "think_mcp_host/destiny_host.py"
+
+    - name: Create App Bundle
+      run: |
+        mkdir -p "AI-Zen-Love.app/Contents/MacOS"
+        mkdir -p "AI-Zen-Love.app/Contents/Resources"
+        cp dist/AI-Zen-Love-bin "AI-Zen-Love.app/Contents/MacOS/"
+        cp scripts/launcher.sh "AI-Zen-Love.app/Contents/MacOS/AI-Zen-Love"
+        chmod +x "AI-Zen-Love.app/Contents/MacOS/AI-Zen-Love"
+        cp think_mcp_host/resources/icons/heart.icns "AI-Zen-Love.app/Contents/Resources/"
+        
+        # 创建 Info.plist
+        cat > "AI-Zen-Love.app/Contents/Info.plist" << EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>CFBundleExecutable</key>
+          <string>AI-Zen-Love</string>
+          <key>CFBundleIconFile</key>
+          <string>heart.icns</string>
+          <key>CFBundleIdentifier</key>
+          <string>com.thinkthinking.aizenapp</string>
+          <key>CFBundleName</key>
+          <string>AI-Zen-Love</string>
+          <key>CFBundlePackageType</key>
+          <string>APPL</string>
+          <key>CFBundleShortVersionString</key>
+          <string>1.0</string>
+          <key>LSMinimumSystemVersion</key>
+          <string>10.10</string>
+          <key>NSHighResolutionCapable</key>
+          <true/>
+        </dict>
+        </plist>
+        EOF
+
+        # 创建 dmg 文件
+        hdiutil create -volname "AI-Zen-Love" -srcfolder AI-Zen-Love.app -ov -format UDZO AI-Zen-Love.dmg
+
+    - name: Release
+      uses: softprops/action-gh-release@v2
+      if: github.event_name == 'release' || github.event.inputs.target_release != ''
+      with:
+        files: |
+          ./AI-Zen-Love.app/**/*
+          ./AI-Zen-Love.dmg
+        tag_name: ${{ github.event.inputs.target_release || github.event.release.tag_name || github.ref_name }}
+        token: ${{ secrets.GITHUB_TOKEN }}
